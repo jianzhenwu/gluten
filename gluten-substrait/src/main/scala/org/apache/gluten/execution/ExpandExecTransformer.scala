@@ -25,18 +25,23 @@ import org.apache.gluten.substrait.expression.ExpressionNode
 import org.apache.gluten.substrait.extensions.ExtensionBuilder
 import org.apache.gluten.substrait.rel.{RelBuilder, RelNode}
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.types.DataType
 
 import java.util.{ArrayList => JArrayList, List => JList}
+
+import scala.util.control.NonFatal
 
 case class ExpandExecTransformer(
     projections: Seq[Seq[Expression]],
     output: Seq[Attribute],
     child: SparkPlan)
   extends UnaryExecNode
-  with UnaryTransformSupport {
+  with UnaryTransformSupport
+  with Logging {
 
   // Note: "metrics" is made transient to avoid sending driver-side metrics to tasks.
   @transient override lazy val metrics =
@@ -58,6 +63,97 @@ case class ExpandExecTransformer(
   // The GroupExpressions can output data with arbitrary partitioning, so set it
   // as UNKNOWN partitioning
   override def outputPartitioning: Partitioning = UnknownPartitioning(0)
+
+  private def transformerDataType(expression: Expression): Option[DataType] = {
+    try {
+      Some(ExpressionConverter.replaceWithExpressionTransformer(expression, child.output).dataType)
+    } catch {
+      case NonFatal(_) => None
+    }
+  }
+
+  private def needsTypeAlignment(expression: Expression, outputType: DataType): Boolean = {
+    expression.dataType != outputType ||
+    transformerDataType(expression).exists(_ != outputType)
+  }
+
+  private def alignExpressionType(expression: Expression, outputType: DataType): Expression = {
+    if (!needsTypeAlignment(expression, outputType)) {
+      expression
+    } else {
+      expression match {
+        case Literal(null, _) => Literal.create(null, outputType)
+        case other => other
+      }
+    }
+  }
+
+  private def alignProjectionsToOutput(projectSets: Seq[Seq[Expression]]): Seq[Seq[Expression]] = {
+    projectSets.map {
+      projectSet =>
+        projectSet.zipWithIndex.map {
+          case (expression, colIdx) if colIdx < output.length =>
+            alignExpressionType(expression, output(colIdx).dataType)
+          case (expression, _) =>
+            expression
+        }
+    }
+  }
+
+  private def columnDiagnostics(projectSets: Seq[Seq[Expression]], colIdx: Int): String = {
+    val outputAttr = output(colIdx)
+    val projectionTypes = projectSets.zipWithIndex.map {
+      case (row, rowIdx) =>
+        val expression = row(colIdx)
+        val nativeType = transformerDataType(expression)
+          .map(_.catalogString)
+          .getOrElse("<unavailable>")
+        s"row[$rowIdx]=${expression.sql}:spark=${expression.dataType.catalogString}," +
+          s"transformer=$nativeType"
+    }
+    s"col[$colIdx]=${outputAttr.name}:output=${outputAttr.dataType.catalogString}," +
+      s" projections=[${projectionTypes.mkString(", ")}]"
+  }
+
+  private def columnTypesMismatch(projectSets: Seq[Seq[Expression]], colIdx: Int): Boolean = {
+    val outputType = output(colIdx).dataType
+    val sparkTypes = projectSets.map(_(colIdx).dataType)
+    val transformerTypes = projectSets.flatMap(row => transformerDataType(row(colIdx)))
+    sparkTypes.distinct.size > 1 ||
+    sparkTypes.exists(_ != outputType) ||
+    transformerTypes.distinct.size > 1 ||
+    transformerTypes.exists(_ != outputType)
+  }
+
+  private def projectionTypeMismatchMessageIfAny(
+      projectSets: Seq[Seq[Expression]]): Option[String] = {
+    if (projectSets.nonEmpty && output.nonEmpty) {
+      val mismatchColumns = output.indices.filter(columnTypesMismatch(projectSets, _))
+      if (mismatchColumns.nonEmpty) {
+        val diagnostics = mismatchColumns
+          .take(5)
+          .map(columnDiagnostics(projectSets, _))
+          .mkString("; ")
+        val omittedColumns = mismatchColumns.size - 5
+        val suffix =
+          if (omittedColumns > 0) s"; ... $omittedColumns more mismatch column(s)" else ""
+        return Some(
+          "ExpandExecTransformer detected projection/output type mismatch before " +
+            "Substrait conversion. Failing validation to avoid native ExpandRel " +
+            "with inconsistent Spark or transformer column types: " +
+            s"$diagnostics$suffix")
+      }
+    }
+    None
+  }
+
+  private def failOnProjectionTypeMismatch(projectSets: Seq[Seq[Expression]]): Unit = {
+    projectionTypeMismatchMessageIfAny(projectSets).foreach {
+      message =>
+        logError(message)
+        throw new IllegalStateException(message)
+    }
+  }
 
   def getRelNode(
       context: SubstraitContext,
@@ -101,11 +197,24 @@ case class ExpandExecTransformer(
       return ValidationResult.failed("Current backend does not support empty projections in expand")
     }
 
+    val alignedProjections = alignProjectionsToOutput(projections)
+    projectionTypeMismatchMessageIfAny(alignedProjections).foreach {
+      message =>
+        logError(message)
+        return ValidationResult.failed(message)
+    }
+
     val substraitContext = new SubstraitContext
     val operatorId = substraitContext.nextOperatorId(this.nodeName)
 
     val relNode =
-      getRelNode(substraitContext, projections, child.output, operatorId, null, validation = true)
+      getRelNode(
+        substraitContext,
+        alignedProjections,
+        child.output,
+        operatorId,
+        null,
+        validation = true)
 
     doNativeValidation(substraitContext, relNode)
   }
@@ -117,9 +226,18 @@ case class ExpandExecTransformer(
       return childCtx
     }
 
+    val alignedProjections = alignProjectionsToOutput(projections)
+    failOnProjectionTypeMismatch(alignedProjections)
+
     val operatorId = context.nextOperatorId(this.nodeName)
     val currRel =
-      getRelNode(context, projections, child.output, operatorId, childCtx.root, validation = false)
+      getRelNode(
+        context,
+        alignedProjections,
+        child.output,
+        operatorId,
+        childCtx.root,
+        validation = false)
     assert(currRel != null, "Expand Rel should be valid")
     TransformContext(output, currRel)
   }
