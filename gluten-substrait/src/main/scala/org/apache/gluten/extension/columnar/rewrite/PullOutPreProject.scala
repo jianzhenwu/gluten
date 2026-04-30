@@ -27,7 +27,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, TypedAggregateExpression}
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
 import org.apache.spark.sql.execution.window.WindowExec
-import org.apache.spark.sql.types.DataType
+import org.apache.spark.sql.types.{DataType, DecimalType}
 
 import scala.collection.mutable
 import scala.util.control.NonFatal
@@ -108,13 +108,27 @@ object PullOutPreProject extends RewriteSingleNode with PullOutProjectHelper {
     case _ => false
   }
 
+  private def isCastToType(expression: Expression, dataType: DataType): Boolean = expression match {
+    case Cast(_, castType, _, _) if castType == dataType => true
+    case _ => false
+  }
+
+  private def needsExplicitExpandOutputCast(
+      expression: Expression,
+      outputType: DataType): Boolean = {
+    outputType.isInstanceOf[DecimalType] &&
+    isNotAttributeAndLiteral(expression) &&
+    !isCastToType(expression, outputType)
+  }
+
   private def needsExpandProjectionTypeAlignment(
       expression: Expression,
       outputType: DataType,
       inputAttributes: Seq[Attribute]): Boolean = {
     !isNullLiteral(expression) &&
     (expression.dataType != outputType ||
-      transformerDataType(expression, inputAttributes).exists(_ != outputType))
+      transformerDataType(expression, inputAttributes).exists(_ != outputType) ||
+      needsExplicitExpandOutputCast(expression, outputType))
   }
 
   private def transformerDataType(
@@ -150,7 +164,7 @@ object PullOutPreProject extends RewriteSingleNode with PullOutProjectHelper {
       expression match {
         case Literal(null, _) =>
           Literal.create(null, outputType)
-        case Cast(_, dataType, _, _) if dataType == outputType =>
+        case _ if isCastToType(expression, outputType) =>
           expression
         case other =>
           Cast(other, outputType)
