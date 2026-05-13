@@ -97,6 +97,7 @@ object VeloxRuleApi {
         RewriteIn,
         RewriteMultiChildrenCount,
         RewriteJoin,
+        AlignExpandOutputTypes,
         PullOutPreProject,
         PullOutPostProject,
         ProjectColumnPruning)

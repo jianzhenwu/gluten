@@ -17,7 +17,6 @@
 package org.apache.gluten.extension.columnar.rewrite
 
 import org.apache.gluten.backendsapi.BackendsApiManager
-import org.apache.gluten.expression.ExpressionConverter
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.utils.PullOutProjectHelper
 
@@ -27,10 +26,8 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, TypedAggregateExpression}
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
 import org.apache.spark.sql.execution.window.WindowExec
-import org.apache.spark.sql.types.{DataType, DecimalType}
 
 import scala.collection.mutable
-import scala.util.control.NonFatal
 
 /**
  * The native engine only supports executing Expressions within the project operator. When there are
@@ -98,77 +95,8 @@ object PullOutPreProject extends RewriteSingleNode with PullOutProjectHelper {
           SparkShimLoader.getSparkShims.getWindowGroupLimitExecShim(plan)
         windowGroupLimitExecShim.orderSpec.exists(o => isNotAttribute(o.child)) ||
         windowGroupLimitExecShim.partitionSpec.exists(isNotAttribute)
-      case expand: ExpandExec => needsExpandPreProject(expand)
+      case expand: ExpandExec => expand.projections.flatten.exists(isNotAttributeAndLiteral)
       case _ => false
-    }
-  }
-
-  private def isNullLiteral(expression: Expression): Boolean = expression match {
-    case Literal(null, _) => true
-    case _ => false
-  }
-
-  private def isCastToType(expression: Expression, dataType: DataType): Boolean = expression match {
-    case Cast(_, castType, _, _) if castType == dataType => true
-    case _ => false
-  }
-
-  private def needsExplicitExpandOutputCast(
-      expression: Expression,
-      outputType: DataType): Boolean = {
-    outputType.isInstanceOf[DecimalType] &&
-    isNotAttributeAndLiteral(expression) &&
-    !isCastToType(expression, outputType)
-  }
-
-  private def needsExpandProjectionTypeAlignment(
-      expression: Expression,
-      outputType: DataType,
-      inputAttributes: Seq[Attribute]): Boolean = {
-    !isNullLiteral(expression) &&
-    (expression.dataType != outputType ||
-      transformerDataType(expression, inputAttributes).exists(_ != outputType) ||
-      needsExplicitExpandOutputCast(expression, outputType))
-  }
-
-  private def transformerDataType(
-      expression: Expression,
-      inputAttributes: Seq[Attribute]): Option[DataType] = {
-    try {
-      Some(ExpressionConverter.replaceWithExpressionTransformer(
-        expression,
-        inputAttributes).dataType)
-    } catch {
-      case NonFatal(_) => None
-    }
-  }
-
-  private def needsExpandPreProject(expand: ExpandExec): Boolean = {
-    expand.projections.exists {
-      projection =>
-        projection.zip(expand.output).exists {
-          case (expression, outputAttr) =>
-            isNotAttributeAndLiteral(expression) ||
-            needsExpandProjectionTypeAlignment(expression, outputAttr.dataType, expand.child.output)
-        }
-    }
-  }
-
-  private def alignExpandProjectionExpression(
-      expression: Expression,
-      outputType: DataType,
-      inputAttributes: Seq[Attribute]): Expression = {
-    if (!needsExpandProjectionTypeAlignment(expression, outputType, inputAttributes)) {
-      expression
-    } else {
-      expression match {
-        case Literal(null, _) =>
-          Literal.create(null, outputType)
-        case _ if isCastToType(expression, outputType) =>
-          expression
-        case other =>
-          Cast(other, outputType)
-      }
     }
   }
 
@@ -330,23 +258,13 @@ object PullOutPreProject extends RewriteSingleNode with PullOutProjectHelper {
     case expand: ExpandExec if needsPreProject(expand) =>
       val expressionMap = new mutable.HashMap[Expression, NamedExpression]()
       val newProjections =
-        expand.projections.toIndexedSeq.map(_.toIndexedSeq.zipWithIndex.map {
-          case (expression, colIdx) =>
-            val alignedExpression =
-              if (colIdx < expand.output.length) {
-                alignExpandProjectionExpression(
-                  expression,
-                  expand.output(colIdx).dataType,
-                  expand.child.output)
-              } else {
-                expression
-              }
+        expand.projections.toIndexedSeq.map(
+          _.toIndexedSeq.map(
             replaceExpressionWithAttribute(
-              alignedExpression,
+              _,
               expressionMap,
               replaceBoundReference = false,
-              replaceLiteral = false)
-        })
+              replaceLiteral = false)))
 
       val newProject = ProjectExec(
         eliminateProjectList(expand.child.outputSet, expressionMap.values.toSeq),
