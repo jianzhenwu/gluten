@@ -105,13 +105,7 @@ case class ExpandExecTransformer(
     val operatorId = substraitContext.nextOperatorId(this.nodeName)
 
     val relNode =
-      getRelNode(
-        substraitContext,
-        projections,
-        child.output,
-        operatorId,
-        null,
-        validation = true)
+      getRelNode(substraitContext, projections, child.output, operatorId, null, validation = true)
 
     doNativeValidation(substraitContext, relNode)
   }
@@ -125,13 +119,7 @@ case class ExpandExecTransformer(
 
     val operatorId = context.nextOperatorId(this.nodeName)
     val currRel =
-      getRelNode(
-        context,
-        projections,
-        child.output,
-        operatorId,
-        childCtx.root,
-        validation = false)
+      getRelNode(context, projections, child.output, operatorId, childCtx.root, validation = false)
     assert(currRel != null, "Expand Rel should be valid")
     TransformContext(output, currRel)
   }
