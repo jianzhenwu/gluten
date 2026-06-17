@@ -2959,6 +2959,78 @@ class GlutenClickHouseTPCHSaltNullParquetSuite
     spark.sql("drop table if exists test_7647")
   }
 
+  test("Expand with round(avg(decimal)) and multiple distinct aggregates") {
+    withTempPath {
+      pendingPath =>
+        withTempPath {
+          verifiedPath =>
+            withTempView("pending_events", "verified_events") {
+              spark
+                .sql("""
+                       |SELECT * FROM VALUES
+                       |  (1L, DATE'2026-04-22', 'A24', 0L),
+                       |  (2L, DATE'2026-04-22', 'A24', 0L)
+                       |AS pending_events(order_id, pending_date, pending_reason, pending_timestamp)
+                       |""".stripMargin)
+                .write
+                .mode("overwrite")
+                .parquet(pendingPath.getCanonicalPath)
+
+              spark
+                .sql("""
+                       |SELECT * FROM VALUES
+                       |  (1L, 90000L),
+                       |  (2L, 180000L)
+                       |AS verified_events(order_id, verified_timestamp)
+                       |""".stripMargin)
+                .write
+                .mode("overwrite")
+                .parquet(verifiedPath.getCanonicalPath)
+
+              spark.read
+                .parquet(pendingPath.getCanonicalPath)
+                .createOrReplaceTempView("pending_events")
+              spark.read
+                .parquet(verifiedPath.getCanonicalPath)
+                .createOrReplaceTempView("verified_events")
+
+              val sql =
+                """
+                  |WITH sla_calc AS (
+                  |  SELECT
+                  |    p.pending_date,
+                  |    p.pending_reason,
+                  |    p.order_id,
+                  |    round(
+                  |      cast((v.verified_timestamp - p.pending_timestamp) as decimal(38, 18)) /
+                  |        3600.000000000000000000,
+                  |      1) AS sla_hours
+                  |  FROM pending_events p
+                  |  JOIN verified_events v
+                  |    ON p.order_id = v.order_id
+                  |)
+                  |SELECT
+                  |  pending_date,
+                  |  pending_reason,
+                  |  COUNT(DISTINCT order_id) AS total_order,
+                  |  round(AVG(sla_hours), 1) AS avg_sla_hours,
+                  |  COUNT(DISTINCT CASE WHEN sla_hours > 24 THEN order_id END) AS backlog_24,
+                  |  COUNT(DISTINCT CASE WHEN sla_hours > 48 THEN order_id END) AS backlog_48
+                  |FROM sla_calc
+                  |GROUP BY pending_date, pending_reason
+                  |""".stripMargin
+
+              compareResultsAgainstVanillaSpark(sql, compareResult = true, { df =>
+                assert(
+                  getExecutedPlan(df).exists(_.isInstanceOf[ExpandExecTransformer]),
+                  s"Expected ExpandExecTransformer in plan, got:\n${df.queryExecution.executedPlan}"
+                )
+              })
+            }
+        }
+    }
+  }
+
   test("GLUTEN-7905 get topk of window by aggregate") {
     withSQLConf(
       (CHConfig.runtimeSettings("enable_window_group_limit_to_aggregate"), "true"),
