@@ -106,7 +106,6 @@ object CHRuleApi {
         RewriteIn,
         RewriteMultiChildrenCount,
         RewriteJoin,
-        AlignExpandOutputTypes,
         PullOutPreProject,
         PullOutPostProject,
         ProjectColumnPruning)

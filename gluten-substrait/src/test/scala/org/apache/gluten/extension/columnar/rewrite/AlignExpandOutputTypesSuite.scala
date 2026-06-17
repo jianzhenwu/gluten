@@ -44,7 +44,7 @@ class AlignExpandOutputTypesSuite extends AnyFunSuite {
     assert(aligned.head.head == Literal.create(null, outputType))
   }
 
-  test("cast only known decimal complex expression mismatch") {
+  test("cast decimal expression whose result type differs from output type") {
     val inputType = DecimalType(20, 6)
     val outputType = DecimalType(30, 6)
     val amount = AttributeReference("amount", inputType, nullable = true)()
@@ -65,7 +65,7 @@ class AlignExpandOutputTypesSuite extends AnyFunSuite {
     }
   }
 
-  test("do not insert generic casts for non-decimal mismatch") {
+  test("cast non-decimal expression whose result type differs from output type") {
     val id = AttributeReference("id", IntegerType, nullable = false)()
     val expression = Add(id, Literal(1))
     val output = AttributeReference("value", LongType, nullable = false)()
@@ -75,6 +75,12 @@ class AlignExpandOutputTypesSuite extends AnyFunSuite {
       Seq(output),
       Seq(id))
 
-    assert(aligned.head.head eq expression)
+    aligned.head.head match {
+      case Cast(child, castType, _, _) =>
+        assert(child == expression)
+        assert(castType == LongType)
+      case other =>
+        fail(s"Expected integer expression to be cast to LongType, got $other")
+    }
   }
 }

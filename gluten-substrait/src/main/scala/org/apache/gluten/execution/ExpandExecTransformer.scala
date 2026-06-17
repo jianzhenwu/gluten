@@ -18,7 +18,6 @@ package org.apache.gluten.execution
 
 import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.expression.{ConverterUtils, ExpressionConverter}
-import org.apache.gluten.extension.columnar.rewrite.ExpandOutputTypeAlignment
 import org.apache.gluten.metrics.MetricsUpdater
 import org.apache.gluten.substrait.`type`.{TypeBuilder, TypeNode}
 import org.apache.gluten.substrait.SubstraitContext
@@ -26,7 +25,6 @@ import org.apache.gluten.substrait.expression.ExpressionNode
 import org.apache.gluten.substrait.extensions.ExtensionBuilder
 import org.apache.gluten.substrait.rel.{RelBuilder, RelNode}
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution._
@@ -38,8 +36,7 @@ case class ExpandExecTransformer(
     output: Seq[Attribute],
     child: SparkPlan)
   extends UnaryExecNode
-  with UnaryTransformSupport
-  with Logging {
+  with UnaryTransformSupport {
 
   // Note: "metrics" is made transient to avoid sending driver-side metrics to tasks.
   @transient override lazy val metrics =
@@ -61,22 +58,6 @@ case class ExpandExecTransformer(
   // The GroupExpressions can output data with arbitrary partitioning, so set it
   // as UNKNOWN partitioning
   override def outputPartitioning: Partitioning = UnknownPartitioning(0)
-
-  private def projectionTypeMismatchMessageIfAny(
-      projectSets: Seq[Seq[Expression]]): Option[String] = {
-    ExpandOutputTypeAlignment.projectionTypeMismatchMessageIfAny(
-      projectSets,
-      output,
-      child.output)
-  }
-
-  private def failOnProjectionTypeMismatch(projectSets: Seq[Seq[Expression]]): Unit = {
-    projectionTypeMismatchMessageIfAny(projectSets).foreach {
-      message =>
-        logError(message)
-        throw new IllegalStateException(message)
-    }
-  }
 
   def getRelNode(
       context: SubstraitContext,
@@ -120,12 +101,6 @@ case class ExpandExecTransformer(
       return ValidationResult.failed("Current backend does not support empty projections in expand")
     }
 
-    projectionTypeMismatchMessageIfAny(projections).foreach {
-      message =>
-        logError(message)
-        return ValidationResult.failed(message)
-    }
-
     val substraitContext = new SubstraitContext
     val operatorId = substraitContext.nextOperatorId(this.nodeName)
 
@@ -147,8 +122,6 @@ case class ExpandExecTransformer(
       // The computing for this Expand is not needed.
       return childCtx
     }
-
-    failOnProjectionTypeMismatch(projections)
 
     val operatorId = context.nextOperatorId(this.nodeName)
     val currRel =
