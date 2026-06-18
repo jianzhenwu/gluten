@@ -3020,12 +3020,17 @@ class GlutenClickHouseTPCHSaltNullParquetSuite
                   |GROUP BY pending_date, pending_reason
                   |""".stripMargin
 
-              compareResultsAgainstVanillaSpark(sql, compareResult = true, { df =>
-                assert(
-                  getExecutedPlan(df).exists(_.isInstanceOf[ExpandExecTransformer]),
-                  s"Expected ExpandExecTransformer in plan, got:\n${df.queryExecution.executedPlan}"
-                )
-              })
+              compareResultsAgainstVanillaSpark(
+                sql,
+                compareResult = true,
+                {
+                  df =>
+                    assert(
+                      getExecutedPlan(df).exists(_.isInstanceOf[ExpandExecTransformer]),
+                      s"Expected ExpandExecTransformer in plan, got:\n${df.queryExecution.executedPlan}"
+                    )
+                }
+              )
             }
         }
     }
