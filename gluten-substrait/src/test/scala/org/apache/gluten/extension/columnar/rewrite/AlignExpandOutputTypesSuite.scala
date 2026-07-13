@@ -16,21 +16,12 @@
  */
 package org.apache.gluten.extension.columnar.rewrite
 
-import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types._
 
 import org.scalatest.funsuite.AnyFunSuite
 
 class AlignExpandOutputTypesSuite extends AnyFunSuite {
-  test("gate alignment rule to Spark 3.2 and 3.3") {
-    val Version = """(\d+)\.(\d+).*""".r
-    val Version(major, minor) = SPARK_VERSION
-    val expected = major.toInt == 3 && minor.toInt >= 2 && minor.toInt < 4
-
-    assert(ExpandOutputTypeAlignment.isSpark32Or33 == expected)
-  }
-
   test("align null literal type to expand output type") {
     val outputType = DecimalType(20, 6)
     val expression = Literal.create(null, NullType)

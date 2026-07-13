@@ -19,10 +19,9 @@ package org.apache.gluten.extension.columnar.rewrite
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.execution.{ExpandExec, SparkPlan}
 import org.apache.spark.sql.types.DataType
-import org.apache.spark.util.SparkVersionUtil
 
 /**
- * Spark 3.2 and 3.3 may produce Expand projections whose expression output types do not exactly
+ * Spark 3.3 may produce Expand projections whose expression output types do not exactly
  * match the corresponding Expand output attributes. Spark's row path tolerates this, but native
  * Expand conversion requires each projection column to have a consistent type.
  *
@@ -31,7 +30,10 @@ import org.apache.spark.util.SparkVersionUtil
  */
 object AlignExpandOutputTypes extends RewriteSingleNode {
   override def isRewritable(plan: SparkPlan): Boolean = {
-    ExpandOutputTypeAlignment.isSpark32Or33 && plan.isInstanceOf[ExpandExec]
+    plan match {
+      case _: ExpandExec => true
+      case _ => false
+    }
   }
 
   override def rewrite(plan: SparkPlan): SparkPlan = plan match {
@@ -52,10 +54,6 @@ object AlignExpandOutputTypes extends RewriteSingleNode {
 }
 
 private[gluten] object ExpandOutputTypeAlignment {
-  val isSpark32Or33: Boolean =
-    SparkVersionUtil.compareMajorMinorVersion((3, 2)) >= 0 &&
-      SparkVersionUtil.compareMajorMinorVersion((3, 4)) < 0
-
   def alignProjections(
       projections: Seq[Seq[Expression]],
       output: Seq[Attribute],
