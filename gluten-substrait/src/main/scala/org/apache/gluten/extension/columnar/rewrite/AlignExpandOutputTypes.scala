@@ -21,9 +21,9 @@ import org.apache.spark.sql.execution.{ExpandExec, SparkPlan}
 import org.apache.spark.sql.types.DataType
 
 /**
- * Spark 3.3 may produce Expand projections whose expression output types do not exactly
- * match the corresponding Expand output attributes. Spark's row path tolerates this, but native
- * Expand conversion requires each projection column to have a consistent type.
+ * Spark 3.3 may produce Expand projections whose expression output types do not exactly match the
+ * corresponding Expand output attributes. Spark's row path tolerates this, but native Expand
+ * conversion requires each projection column to have a consistent type.
  *
  * This rule rewrites each projection column: null literals are replaced with a typed null matching
  * the output type; non-matching expressions are wrapped in a Cast to the output type.
