@@ -37,7 +37,7 @@ object AlignExpandOutputTypes extends RewriteSingleNode {
   }
 
   override def rewrite(plan: SparkPlan): SparkPlan = plan match {
-    case expand: ExpandExec if isRewritable(expand) =>
+    case expand: ExpandExec =>
       val alignedProjections = ExpandOutputTypeAlignment.alignProjections(
         expand.projections,
         expand.output,
